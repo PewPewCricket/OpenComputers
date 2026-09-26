@@ -230,34 +230,33 @@ object DataCard {
 
     // ----------------------------------------------------------------------- //
 
-    @Callback(direct = true, limit = 1, doc = """function([bitLen:number]):userdata, userdata -- Generates key pair. Returns: public, private keys. Allowed key lengths: 256, 384 bits.""")
+    @Callback(direct = true, limit = 1, doc = """function([bitLen:number[, keyType:string]]):userdata, userdata -- Generates a key pair. keyType is "ec" (default), "ed25519", or "x25519". bitLen only applies to "ec" keys (256 or 384, default 384). Returns: public, private keys.""")
     def generateKeyPair(context: Context, args: Arguments): Array[AnyRef] = {
       checkCost(Settings.get.dataCardAsymmetric)
 
-      val bitLen = args.optInteger(0, 384)
-      if (bitLen != 256 && bitLen != 384)
-        throw new IllegalArgumentException("invalid key length, must be 256 or 384")
+      val keyType = args.optString(1, "ec")
 
-      val kpg = KeyPairGenerator.getInstance("EC")
-      kpg.initialize(bitLen, SecureRandomInstance.get)
-      val kp = kpg.generateKeyPair()
+      val kp = keyType match {
+        case "ec" =>
+          val bitLen = args.optInteger(0, 384)
+          if (bitLen != 256 && bitLen != 384)
+            throw new IllegalArgumentException("invalid key length, must be 256 or 384")
+          val kpg = KeyPairGenerator.getInstance("EC")
+          kpg.initialize(bitLen, SecureRandomInstance.get)
+          kpg.generateKeyPair()
 
-      result(new ECUserdata(kp.getPublic), new ECUserdata(kp.getPrivate))
-    }
+        case "ed25519" =>
+          val kpg = KeyPairGenerator.getInstance("Ed25519")
+          kpg.initialize(255, SecureRandomInstance.get)
+          kpg.generateKeyPair()
 
-    @Callback(direct = true, limit = 1, doc = """function(keyType:string):userdata, userdata -- Generates an ed25519/x25519 key pair.""")
-    def generate25519KeyPair(context: Context, args: Arguments): Array[AnyRef] = {
-      checkCost(Settings.get.dataCardAsymmetric)
-      val keyType = args.checkString(0)
-      val algorithm = keyType match {
-        case "ed25519" => "Ed25519"
-        case "x25519" => "X25519"
-        case _ => throw new IllegalArgumentException("invalid key type, must be ed25519 or x25519")
+        case "x25519" =>
+          val kpg = KeyPairGenerator.getInstance("X25519")
+          kpg.initialize(255, SecureRandomInstance.get)
+          kpg.generateKeyPair()
+
+        case _ => throw new IllegalArgumentException("invalid key type, must be ec, ed25519, or x25519")
       }
-
-      val kpg = KeyPairGenerator.getInstance(algorithm)
-      kpg.initialize(255, SecureRandomInstance.get)
-      val kp = kpg.generateKeyPair()
 
       result(new ECUserdata(kp.getPublic), new ECUserdata(kp.getPrivate))
     }
@@ -273,8 +272,8 @@ object DataCard {
     @Callback(direct = true, limit = 1, doc = """function(priv:userdata, pub:userdata):string -- Generates a shared key. ecdh(a.priv, b.pub) == ecdh(b.priv, a.pub)""")
     def ecdh(context: Context, args: Arguments): Array[AnyRef] = {
       checkCost(Settings.get.dataCardAsymmetric)
-      val privKey = checkUserdata(args, 0, isPublic = Option(false)).value
-      val pubKey = checkUserdata(args, 1, isPublic = Option(true)).value
+      val privKey = checkECUserdata(args, 0, isPublic = Option(false)).value
+      val pubKey = checkECUserdata(args, 1, isPublic = Option(true)).value
 
       val ka = KeyAgreement.getInstance("ECDH")
       ka.init(privKey)
@@ -297,7 +296,7 @@ object DataCard {
     @Callback(direct = true, limit = 1, doc = """function(data:string, key:userdata[, sig:string]):string or boolean -- Signs or verifies data.""")
     def ecdsa(context: Context, args: Arguments): Array[AnyRef] = {
       val data = asymmetricCost(context, args)
-      val key = checkUserdata(args, 1)
+      val key = checkECUserdata(args, 1)
       val sig = args.optByteArray(2, null)
 
       val sign = Signature.getInstance("SHA256withECDSA")
@@ -366,6 +365,14 @@ object DataCard {
           s"bad argument #${i + 1} (userdata expected, got no value)")
         case value => throw new IllegalArgumentException(
           s"bad argument #${i + 1} (userdata expected, got ${value.getClass.getName})")
+      }
+    }
+
+    private def checkECUserdata(args: Arguments, i: Int, isPublic: Option[Boolean] = None) = {
+      val value = checkUserdata(args, i, isPublic)
+      value.value match {
+        case _: ECPublicKey | _: ECPrivateKey => value
+        case _ => throw new IllegalArgumentException(s"bad argument #${i + 1} (ec key expected)")
       }
     }
 
